@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Emergency Signal Preemption — Control Room</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #080c10;
+    --surface:   #0d1117;
+    --border:    #1a2332;
+    --accent:    #00d4ff;
+    --green:     #00ff88;
+    --red:       #ff3d3d;
+    --amber:     #ffaa00;
+    --text:      #c9d8e8;
+    --muted:     #4a6080;
+    --font-mono: 'Share Tech Mono', monospace;
+    --font-main: 'Barlow', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-main);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,212,255,0.015) 2px, rgba(0,212,255,0.015) 4px);
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 2rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo-icon {
+    width: 36px;
+    height: 36px;
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    animation: pulse-border 2s infinite;
+  }
+
+  @keyframes pulse-border {
+    0%, 100% { border-color: var(--accent); box-shadow: 0 0 8px var(--accent); }
+    50% { border-color: var(--green); box-shadow: 0 0 16px var(--green); }
+  }
+
+  .logo-text {
+    font-weight: 900;
+    font-size: 1.1rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #fff;
+  }
+
+  .logo-sub {
+    font-size: 0.65rem;
+    color: var(--muted);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+  }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    border: 1px solid;
+    font-family: var(--font-mono);
+  }
+
+  .status-pill.connected {
+    border-color: var(--green);
+    color: var(--green);
+    background: rgba(0,255,136,0.08);
+  }
+
+  .status-pill.disconnected {
+    border-color: var(--red);
+    color: var(--red);
+    background: rgba(255,61,61,0.08);
+  }
+
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .status-pill.connected .status-dot {
+    animation: blink 1.2s infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.2; }
+  }
+
+  .clock {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    color: var(--accent);
+  }
+
+  /* ── Layout ── */
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 0;
+    height: calc(100vh - 65px);
+  }
+
+  /* ── Left Panel ── */
+  .left-panel {
+    padding: 1.5rem;
+    overflow-y: auto;
+    border-right: 1px solid var(--border);
+  }
+
+  /* ── Stats Bar ── */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+  }
+
+  .stat-card.blue::before  { background: var(--accent); }
+  .stat-card.green::before { background: var(--green); }
+  .stat-card.red::before   { background: var(--red); }
+  .stat-card.amber::before { background: var(--amber); }
+
+  .stat-label {
+    font-size: 0.65rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .stat-value {
+    font-family: var(--font-mono);
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: #fff;
+  }
+
+  .stat-card.blue  .stat-value { color: var(--accent); }
+  .stat-card.green .stat-value { color: var(--green); }
+  .stat-card.red   .stat-value { color: var(--red); }
+  .stat-card.amber .stat-value { color: var(--amber); }
+
+  /* ── Section Title ── */
+  .section-title {
+    font-size: 0.7rem;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ── Request Cards ── */
+  .requests-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .request-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    position: relative;
+    overflow: hidden;
+    animation: slideIn 0.4s ease;
+    transition: border-color 0.3s;
+  }
+
+  .request-card:hover {
+    border-color: var(--accent);
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .request-card.approved {
+    border-color: var(--green);
+    background: rgba(0,255,136,0.04);
+  }
+
+  .request-card.rejected {
+    border-color: var(--red);
+    background: rgba(255,61,61,0.04);
+    opacity: 0.6;
+  }
+
+  .request-card.rerouted {
+    border-color: var(--amber);
+    background: rgba(255,170,0,0.04);
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+  }
+
+  .vehicle-badge {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .vehicle-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    background: rgba(0,212,255,0.1);
+    border: 1px solid rgba(0,212,255,0.3);
+  }
+
+  .vehicle-id {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    color: #fff;
+    font-weight: 700;
+  }
+
+  .vehicle-priority {
+    font-size: 0.6rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(255,170,0,0.15);
+    color: var(--amber);
+    border: 1px solid rgba(255,170,0,0.3);
+  }
+
+  .card-time {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+
+  .card-body {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  .info-item {
+    background: rgba(255,255,255,0.03);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+
+  .info-label {
+    font-size: 0.6rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+
+  .info-value {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+
+  .info-value.highlight {
+    color: var(--accent);
+  }
+
+  .card-coords {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: rgba(0,212,255,0.05);
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--accent);
+  }
+
+  /* ── Action Buttons ── */
+  .card-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0.5rem;
+  }
+
+  .btn {
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid;
+    font-family: var(--font-main);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .btn-approve {
+    background: rgba(0,255,136,0.1);
+    border-color: var(--green);
+    color: var(--green);
+  }
+
+  .btn-approve:hover {
+    background: var(--green);
+    color: #000;
+    box-shadow: 0 0 20px rgba(0,255,136,0.4);
+  }
+
+  .btn-reject {
+    background: rgba(255,61,61,0.1);
+    border-color: var(--red);
+    color: var(--red);
+  }
+
+  .btn-reject:hover {
+    background: var(--red);
+    color: #fff;
+    box-shadow: 0 0 20px rgba(255,61,61,0.4);
+  }
+
+  .btn-reroute {
+    background: rgba(255,170,0,0.1);
+    border-color: var(--amber);
+    color: var(--amber);
+  }
+
+  .btn-reroute:hover {
+    background: var(--amber);
+    color: #000;
+    box-shadow: 0 0 20px rgba(255,170,0,0.4);
+  }
+
+  .btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .status-badge.approved {
+    background: rgba(0,255,136,0.15);
+    color: var(--green);
+    border: 1px solid var(--green);
+  }
+
+  .status-badge.rejected {
+    background: rgba(255,61,61,0.15);
+    color: var(--red);
+    border: 1px solid var(--red);
+  }
+
+  .status-badge.rerouted {
+    background: rgba(255,170,0,0.15);
+    color: var(--amber);
+    border: 1px solid var(--amber);
+  }
+
+  /* ── Empty State ── */
+  .empty-state {
+    text-align: center;
+    padding: 4rem 2rem;
+    color: var(--muted);
+  }
+
+  .empty-icon {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+    opacity: 0.3;
+  }
+
+  .empty-text {
+    font-size: 0.9rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  /* ── Right Panel ── */
+  .right-panel {
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Signal Status ── */
+  .signal-section {
+    padding: 1.25rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .signal-display {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    padding: 1.25rem;
+    background: rgba(0,0,0,0.3);
+    border-radius: 10px;
+    border: 1px solid var(--border);
+  }
+
+  .signal-light {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.1);
+    transition: all 0.5s ease;
+    position: relative;
+  }
+
+  .signal-light.red-off   { background: rgba(255,61,61,0.15); }
+  .signal-light.red-on    { background: var(--red); box-shadow: 0 0 20px var(--red), 0 0 40px rgba(255,61,61,0.4); }
+  .signal-light.amber-off { background: rgba(255,170,0,0.15); }
+  .signal-light.amber-on  { background: var(--amber); box-shadow: 0 0 20px var(--amber); }
+  .signal-light.green-off { background: rgba(0,255,136,0.15); }
+  .signal-light.green-on  { background: var(--green); box-shadow: 0 0 20px var(--green), 0 0 40px rgba(0,255,136,0.4); }
+
+  .signal-label {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 4px;
+  }
+
+  .signal-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  /* ── Map ── */
+  .map-section {
+    padding: 1.25rem;
+    border-bottom: 1px solid var(--border);
+    flex: 1;
+  }
+
+  #map {
+    width: 100%;
+    height: 220px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: #0d1520;
+    overflow: hidden;
+  }
+
+  /* ── Activity Log ── */
+  .log-section {
+    padding: 1.25rem;
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .log-list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .log-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.02);
+    animation: fadeIn 0.3s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  .log-time {
+    color: var(--muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .log-msg { color: var(--text); }
+  .log-item.success .log-msg { color: var(--green); }
+  .log-item.error   .log-msg { color: var(--red); }
+  .log-item.warning .log-msg { color: var(--amber); }
+  .log-item.info    .log-msg { color: var(--accent); }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* ── Toast ── */
+  .toast {
+    position: fixed;
+    bottom: 2rem;
+    right: 2rem;
+    padding: 1rem 1.5rem;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    z-index: 9999;
+    animation: toastIn 0.3s ease;
+    border: 1px solid;
+  }
+
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .toast.success { background: rgba(0,255,136,0.15); border-color: var(--green); color: var(--green); }
+  .toast.error   { background: rgba(255,61,61,0.15);  border-color: var(--red);   color: var(--red); }
+  .toast.warning { background: rgba(255,170,0,0.15);  border-color: var(--amber); color: var(--amber); }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">🚨</div>
+    <div>
+      <div class="logo-text">Control Room</div>
+      <div class="logo-sub">Emergency Signal Preemption System</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="clock" id="clock">00:00:00</div>
+    <div class="status-pill disconnected" id="mqttStatus">
+      <div class="status-dot"></div>
+      <span id="mqttStatusText">Connecting...</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main Layout ── -->
+<div class="layout">
+
+  <!-- Left Panel -->
+  <div class="left-panel">
+    <!-- Stats -->
+    <div class="stats-bar">
+      <div class="stat-card blue">
+        <div class="stat-label">Total Requests</div>
+        <div class="stat-value" id="statTotal">0</div>
+      </div>
+      <div class="stat-card green">
+        <div class="stat-label">Approved</div>
+        <div class="stat-value" id="statApproved">0</div>
+      </div>
+      <div class="stat-card red">
+        <div class="stat-label">Rejected</div>
+        <div class="stat-value" id="statRejected">0</div>
+      </div>
+      <div class="stat-card amber">
+        <div class="stat-label">Rerouted</div>
+        <div class="stat-value" id="statRerouted">0</div>
+      </div>
+    </div>
+
+    <!-- Requests -->
+    <div class="section-title">Incoming Requests</div>
+    <div class="requests-list" id="requestsList">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">📡</div>
+        <div class="empty-text">Waiting for emergency requests...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Panel -->
+  <div class="right-panel">
+
+    <!-- Signal Status -->
+    <div class="signal-section">
+      <div class="section-title">Signal Status</div>
+      <div class="signal-display">
+        <div class="signal-item">
+          <div class="signal-light red-on" id="lightRed"></div>
+          <div class="signal-label">RED</div>
+        </div>
+        <div class="signal-item">
+          <div class="signal-light amber-off" id="lightAmber"></div>
+          <div class="signal-label">AMBER</div>
+        </div>
+        <div class="signal-item">
+          <div class="signal-light green-off" id="lightGreen"></div>
+          <div class="signal-label">GREEN</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Map -->
+    <div class="map-section">
+      <div class="section-title">Vehicle Location</div>
+      <div id="map">
+        <iframe id="mapFrame"
+          width="100%" height="220"
+          style="border:0;border-radius:10px;filter:invert(90%) hue-rotate(180deg)"
+          loading="lazy"
+          src="https://www.openstreetmap.org/export/embed.html?bbox=77.5,12.9,77.7,13.1&layer=mapnik"
+          allowfullscreen>
+        </iframe>
+      </div>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="log-section">
+      <div class="section-title">Activity Log</div>
+      <div class="log-list" id="logList"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── Config ──────────────────────────────────
+const BROKER_URL   = 'wss://broker.hivemq.com:8884/mqtt';
+const TOPIC_SUB    = 'emergency/request';
+const TOPIC_ACK    = 'emergency/ack';
+const TOPIC_RESET  = 'emergency/reset';
+
+// ── State ────────────────────────────────────
+let client;
+let requests     = [];
+let stats        = { total: 0, approved: 0, rejected: 0, rerouted: 0 };
+let signalState  = 'red';
+
+// ── Clock ────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toTimeString().slice(0,8);
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ── MQTT ─────────────────────────────────────
+function connectMQTT() {
+  addLog('Connecting to broker...', 'info');
+
+  client = mqtt.connect(BROKER_URL, {
+    clientId: 'dashboard-' + Math.random().toString(16).slice(2,8),
+    clean: true,
+    reconnectPeriod: 3000
+  });
+
+  client.on('connect', () => {
+    setStatus(true);
+    addLog('Connected to broker.hivemq.com', 'success');
+    client.subscribe(TOPIC_SUB);
+    client.subscribe(TOPIC_RESET);
+    addLog('Subscribed to emergency/request', 'info');
+  });
+
+  client.on('message', (topic, message) => {
+    const msg = message.toString();
+    addLog(`Message on ${topic}`, 'info');
+
+    if (topic === TOPIC_SUB) {
+      try {
+        const data = JSON.parse(msg);
+        addRequest(data);
+      } catch(e) {
+        addLog('Invalid JSON received', 'error');
+      }
+    }
+
+    if (topic === TOPIC_RESET) {
+      addLog('Vehicle passed — signal reset to RED', 'warning');
+      setSignal('red');
+    }
+  });
+
+  client.on('disconnect', () => {
+    setStatus(false);
+    addLog('Disconnected from broker', 'error');
+  });
+
+  client.on('error', (err) => {
+    addLog('Connection error: ' + err.message, 'error');
+  });
+}
+
+// ── Set Connection Status ─────────────────────
+function setStatus(connected) {
+  const pill = document.getElementById('mqttStatus');
+  const text = document.getElementById('mqttStatusText');
+  pill.className = 'status-pill ' + (connected ? 'connected' : 'disconnected');
+  text.textContent = connected ? 'LIVE' : 'OFFLINE';
+}
+
+// ── Add Request Card ──────────────────────────
+function addRequest(data) {
+  const id = Date.now();
+  const time = new Date().toLocaleTimeString();
+
+  stats.total++;
+  document.getElementById('statTotal').textContent = stats.total;
+
+  // Remove empty state
+  document.getElementById('emptyState').style.display = 'none';
+
+  const card = document.createElement('div');
+  card.className = 'request-card';
+  card.id = 'card-' + id;
+
+  const vehicleEmoji = data.vehicle_id?.startsWith('AMB') ? '🚑' :
+                       data.vehicle_id?.startsWith('FIRE') ? '🚒' : '🚓';
+
+  card.innerHTML = `
+    <div class="card-header">
+      <div class="vehicle-badge">
+        <div class="vehicle-icon">${vehicleEmoji}</div>
+        <div>
+          <div class="vehicle-id">${data.vehicle_id || 'UNKNOWN'}</div>
+          <span class="vehicle-priority">${data.priority || 'HIGH'}</span>
+        </div>
+      </div>
+      <div class="card-time">${time}</div>
+    </div>
+
+    <div class="card-body">
+      <div class="info-item">
+        <div class="info-label">Direction</div>
+        <div class="info-value highlight">${data.direction || 'N/A'}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Destination</div>
+        <div class="info-value">${data.destination || 'N/A'}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Signals Needed</div>
+        <div class="info-value highlight">${data.signals_requested || 'N/A'}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">City</div>
+        <div class="info-value">${data.city || 'N/A'}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Auth Token</div>
+        <div class="info-value">${data.auth_token ? '✅ Valid' : '❌ Missing'}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Vehicle ID</div>
+        <div class="info-value">${data.vehicle_id || 'N/A'}</div>
+      </div>
+    </div>
+
+    <div class="card-coords">
+      📍 ${data.lat?.toFixed(6) || '0.000000'}, ${data.lon?.toFixed(6) || '0.000000'}
+    </div>
+
+    <div class="card-actions" id="actions-${id}">
+      <button class="btn btn-approve" onclick="handleAction('${id}', 'approved', this)">
+        ✅ Approve
+      </button>
+      <button class="btn btn-reject" onclick="handleAction('${id}', 'rejected', this)">
+        ❌ Reject
+      </button>
+      <button class="btn btn-reroute" onclick="handleAction('${id}', 'reroute', this)">
+        ⚠️ Reroute
+      </button>
+    </div>
+  `;
+
+  // Prepend so newest is on top
+  const list = document.getElementById('requestsList');
+  list.insertBefore(card, list.firstChild);
+
+  addLog(`New request from ${data.vehicle_id} — ${data.city}`, 'info');
+
+  // Update map
+  if (data.lat && data.lon) updateMap(data.lat, data.lon);
+
+  showToast(`🚨 New request from ${data.vehicle_id}`, 'warning');
+}
+
+// ── Handle Approve/Reject/Reroute ────────────
+function handleAction(cardId, action, btn) {
+  // Publish to MQTT
+  client.publish(TOPIC_ACK, action);
+  addLog(`Sent "${action}" to vehicle`, action === 'approved' ? 'success' : action === 'rejected' ? 'error' : 'warning');
+
+  // Update card
+  const card = document.getElementById('card-' + cardId);
+  card.className = 'request-card ' + (action === 'reroute' ? 'rerouted' : action);
+
+  // Replace buttons with status badge
+  const actions = document.getElementById('actions-' + cardId);
+  const label = action === 'approved' ? '✅ Approved' : action === 'rejected' ? '❌ Rejected' : '⚠️ Rerouted';
+  actions.innerHTML = `<span class="status-badge ${action === 'reroute' ? 'rerouted' : action}">${label}</span>`;
+
+  // Update stats
+  if (action === 'approved') {
+    stats.approved++;
+    document.getElementById('statApproved').textContent = stats.approved;
+    setSignal('green');
+    showToast('✅ Signal turning GREEN', 'success');
+  } else if (action === 'rejected') {
+    stats.rejected++;
+    document.getElementById('statRejected').textContent = stats.rejected;
+    showToast('❌ Request rejected', 'error');
+  } else {
+    stats.rerouted++;
+    document.getElementById('statRerouted').textContent = stats.rerouted;
+    showToast('⚠️ Reroute sent to vehicle', 'warning');
+  }
+}
+
+// ── Signal Light Control ──────────────────────
+function setSignal(state) {
+  signalState = state;
+  document.getElementById('lightRed').className   = 'signal-light ' + (state === 'red'   ? 'red-on'   : 'red-off');
+  document.getElementById('lightAmber').className = 'signal-light ' + (state === 'amber' ? 'amber-on' : 'amber-off');
+  document.getElementById('lightGreen').className = 'signal-light ' + (state === 'green' ? 'green-on' : 'green-off');
+  addLog(`Signal changed to ${state.toUpperCase()}`, state === 'green' ? 'success' : state === 'red' ? 'error' : 'warning');
+}
+
+// ── Update Map ────────────────────────────────
+function updateMap(lat, lon) {
+  const delta = 0.01;
+  const bbox  = `${lon-delta},${lat-delta},${lon+delta},${lat+delta}`;
+  const src   = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lon}`;
+  document.getElementById('mapFrame').src = src;
+  addLog(`Map updated: ${lat.toFixed(4)}, ${lon.toFixed(4)}`, 'info');
+}
+
+// ── Activity Log ──────────────────────────────
+function addLog(msg, type = 'info') {
+  const list = document.getElementById('logList');
+  const item = document.createElement('div');
+  item.className = 'log-item ' + type;
+
+  const time = new Date().toLocaleTimeString();
+  item.innerHTML = `<span class="log-time">[${time}]</span><span class="log-msg">${msg}</span>`;
+
+  list.insertBefore(item, list.firstChild);
+
+  // Keep max 50 logs
+  while (list.children.length > 50) list.removeChild(list.lastChild);
+}
+
+// ── Toast Notification ────────────────────────
+function showToast(msg, type) {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + type;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 3000);
+}
+
+// ── Start ─────────────────────────────────────
+connectMQTT();
+</script>
+</body>
+</html>
