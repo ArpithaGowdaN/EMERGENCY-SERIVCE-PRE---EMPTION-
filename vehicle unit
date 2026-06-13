@@ -7,8 +7,8 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-const char* WIFI_SSID     = "vivo Y400 5G";
-const char* WIFI_PASSWORD = "Arpitha@";
+const char* WIFI_SSID     = "vivo ";
+const char* WIFI_PASSWORD = "A";
 const char* MQTT_BROKER   = "broker.hivemq.com";
 const int   MQTT_PORT     = 1883;
 const char* TOPIC_PUB     = "emergency/request";
