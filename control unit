@@ -1,0 +1,366 @@
+// ═══════════════════════════════════════════════════════════════
+//  ESP32 #2 — Signal / Junction Unit FINAL
+//  RFID RC522 + IR Sensors + Traffic LEDs + MQTT
+//  NO LCD on this unit
+//
+//  RFID CARDS:
+//  FB 7C 70 05 → AMB-01  (Ambulance)
+//  4A 9E 98 04 → FIRE-01 (Fire Truck)
+//
+//  COMPLETE FLOW:
+//  1. Button pressed on ESP32 #1 → request sent
+//  2. Dashboard operator approves
+//  3. ESP32 #2 receives "approved" → LED RED→GREEN
+//  4. IR Sensor 1 detects vehicle arriving
+//  5. RFID confirms vehicle identity
+//  6. IR Sensor 2 detects vehicle passed
+//  7. AUTO RESET → LED GREEN→RED (no human needed)
+// ═══════════════════════════════════════════════════════════════
+
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <SPI.h>
+#include <MFRC522.h>
+
+// ─── CONFIG — change these ─────────────────────────────────────
+const char* WIFI_SSID     = "vivo";
+const char* WIFI_PASSWORD = "A";
+const char* MQTT_BROKER   = "broker.hivemq.com";
+const int   MQTT_PORT     = 1883;
+const char* TOPIC_PUB     = "emergency/request";
+const char* TOPIC_CMD     = "ambulance/junction/command";
+const char* TOPIC_STATUS  = "emergency/status";
+
+// ─── PINS ──────────────────────────────────────────────────────
+// RFID RC522
+const int RFID_SS_PIN  = 5;    // SDA pin on RC522
+const int RFID_RST_PIN = 4;    // RST pin on RC522
+// SCK  → GPIO 18 (SPI default)
+// MOSI → GPIO 23 (SPI default)
+// MISO → GPIO 19 (SPI default)
+// IRQ  → NOT CONNECTED
+
+// Traffic LEDs (each with 220Ω resistor to GND)
+const int LED_RED    = 26;
+const int LED_YELLOW = 27;
+const int LED_GREEN  = 14;
+
+// IR Sensors
+const int IR_SENSOR_1 = 34;   // Detects vehicle APPROACHING
+const int IR_SENSOR_2 = 35;   // Detects vehicle PASSED
+
+// ─── RFID TAG REGISTRY ─────────────────────────────────────────
+struct VehicleTag {
+  const char* uid;
+  const char* vehicle_id;
+  const char* vehicle_type;
+};
+
+VehicleTag TAGS[] = {
+  { "FB 7C 70 05", "AMB-01",  "Ambulance"  },
+  { "4A 9E 98 04", "FIRE-01", "Fire Truck" }
+};
+const int NUM_TAGS = 2;
+
+// ─── JUNCTION CONFIG ───────────────────────────────────────────
+const float JUNCTION_LAT  = 12.9720;
+const float JUNCTION_LON  = 77.5950;
+const char* JUNCTION_NAME = "Demo Junction";
+
+// ─── OBJECTS ───────────────────────────────────────────────────
+WiFiClient   wifiClient;
+PubSubClient mqtt(wifiClient);
+MFRC522      rfid(RFID_SS_PIN, RFID_RST_PIN);
+
+// ─── STATE ─────────────────────────────────────────────────────
+bool          signalCleared     = false;  // true = GREEN
+bool          vehicleApproached = false;  // IR1 triggered
+bool          vehiclePassed     = false;  // IR2 triggered
+bool          rfidConfirmed     = false;  // RFID matched
+String        currentVehicleId  = "";
+
+unsigned long signalClearTime   = 0;
+unsigned long lastRfidTime      = 0;
+
+// Timeouts
+const long SIGNAL_TIMEOUT  = 60000;  // 60 sec max green (safety)
+const long RFID_COOLDOWN   = 5000;   // 5 sec between RFID taps
+
+// IR sensor debounce
+bool          lastIR1 = HIGH;
+bool          lastIR2 = HIGH;
+unsigned long ir1Time = 0;
+unsigned long ir2Time = 0;
+const int     IR_DEBOUNCE = 100;
+
+// ─── SIGNAL CONTROLLER ─────────────────────────────────────────
+void setSignal(String state) {
+  if (state == "GREEN") {
+    digitalWrite(LED_RED,    LOW);
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_GREEN,  HIGH);
+    Serial.println("[LED] GREEN — Emergency vehicle cleared");
+
+  } else if (state == "YELLOW") {
+    digitalWrite(LED_RED,    LOW);
+    digitalWrite(LED_YELLOW, HIGH);
+    digitalWrite(LED_GREEN,  LOW);
+    Serial.println("[LED] YELLOW — Request pending");
+
+  } else if (state == "RED") {
+    digitalWrite(LED_RED,    HIGH);
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_GREEN,  LOW);
+    Serial.println("[LED] RED — Normal traffic");
+
+  } else if (state == "BLINK_RED") {
+    // Blink red 3 times for rejection
+    for (int i = 0; i < 3; i++) {
+      digitalWrite(LED_RED, HIGH); delay(200);
+      digitalWrite(LED_RED, LOW);  delay(200);
+    }
+    digitalWrite(LED_RED, HIGH);
+  }
+}
+
+// ─── AUTO RESET — called when vehicle has passed ────────────────
+void autoReset() {
+  Serial.println("\n[AUTO RESET] Vehicle passed — resetting to NORMAL");
+  setSignal("RED");
+  signalCleared     = false;
+  vehicleApproached = false;
+  vehiclePassed     = false;
+  rfidConfirmed     = false;
+  currentVehicleId  = "";
+
+  // Publish status back so dashboard knows
+  StaticJsonDocument<200> doc;
+  doc["status"]     = "reset";
+  doc["junction"]   = JUNCTION_NAME;
+  doc["message"]    = "Vehicle passed — signal reverted to normal";
+  String payload;
+  serializeJson(doc, payload);
+  mqtt.publish(TOPIC_STATUS, payload.c_str());
+
+  Serial.println("[STATUS] System back to NORMAL — ready for next request");
+}
+
+// ─── RFID HANDLER ──────────────────────────────────────────────
+void handleRfidTap() {
+  // Build UID string
+  String uid = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    if (i > 0) uid += " ";
+    if (rfid.uid.uidByte[i] < 0x10) uid += "0";
+    uid += String(rfid.uid.uidByte[i], HEX);
+  }
+  uid.toUpperCase();
+
+  Serial.println("\n[RFID] Card tapped: " + uid);
+
+  // Match UID
+  VehicleTag* match = nullptr;
+  for (int i = 0; i < NUM_TAGS; i++) {
+    if (uid == String(TAGS[i].uid)) {
+      match = &TAGS[i];
+      break;
+    }
+  }
+
+  if (!match) {
+    Serial.println("[RFID] UNKNOWN card — ignored");
+    return;
+  }
+
+  Serial.printf("[RFID] Matched: %s (%s)\n",
+    match->vehicle_id, match->vehicle_type);
+
+  rfidConfirmed    = true;
+  currentVehicleId = String(match->vehicle_id);
+
+  // Publish confirmation
+  StaticJsonDocument<200> doc;
+  doc["status"]       = "rfid_confirmed";
+  doc["vehicle_id"]   = match->vehicle_id;
+  doc["vehicle_type"] = match->vehicle_type;
+  doc["junction"]     = JUNCTION_NAME;
+  String payload;
+  serializeJson(doc, payload);
+  mqtt.publish(TOPIC_STATUS, payload.c_str());
+
+  Serial.println("[RFID] Identity confirmed and published");
+}
+
+// ─── MQTT COMMAND HANDLER ──────────────────────────────────────
+void onMqttMessage(char* topic, byte* message,
+                   unsigned int length) {
+  String msg = "";
+  for (unsigned int i = 0; i < length; i++)
+    msg += (char)message[i];
+
+  Serial.println("\n[CMD] Received: " + msg);
+
+  if (msg == "approved" || msg == "CLEAR") {
+    // Dashboard approved — go GREEN
+    setSignal("GREEN");
+    signalCleared   = true;
+    signalClearTime = millis();
+    Serial.println("[CMD] APPROVED — Signal GREEN, waiting for vehicle");
+
+  } else if (msg == "rejected") {
+    setSignal("BLINK_RED");
+    signalCleared = false;
+    Serial.println("[CMD] REJECTED — staying RED");
+
+  } else if (msg == "reroute") {
+    setSignal("BLINK_RED");
+    signalCleared = false;
+    Serial.println("[CMD] REROUTE — staying RED");
+
+  } else if (msg == "NORMAL") {
+    autoReset();
+  }
+}
+
+// ─── IR SENSOR CHECK ───────────────────────────────────────────
+void checkIRSensors() {
+  // ── IR Sensor 1 — vehicle APPROACHING ──
+  bool ir1Reading = digitalRead(IR_SENSOR_1);
+  if (ir1Reading != lastIR1) ir1Time = millis();
+  if ((millis() - ir1Time) > IR_DEBOUNCE) {
+    // LOW means object detected (most IR sensors)
+    if (ir1Reading == LOW && lastIR1 == HIGH) {
+      if (signalCleared && !vehicleApproached) {
+        vehicleApproached = true;
+        Serial.println("\n[IR1] Vehicle APPROACHING junction!");
+
+        // Publish approach status
+        StaticJsonDocument<150> doc;
+        doc["status"]   = "vehicle_approaching";
+        doc["junction"] = JUNCTION_NAME;
+        String payload;
+        serializeJson(doc, payload);
+        mqtt.publish(TOPIC_STATUS, payload.c_str());
+      }
+    }
+  }
+  lastIR1 = ir1Reading;
+
+  // ── IR Sensor 2 — vehicle PASSED ──
+  bool ir2Reading = digitalRead(IR_SENSOR_2);
+  if (ir2Reading != lastIR2) ir2Time = millis();
+  if ((millis() - ir2Time) > IR_DEBOUNCE) {
+    if (ir2Reading == LOW && lastIR2 == HIGH) {
+      if (signalCleared && vehicleApproached && !vehiclePassed) {
+        vehiclePassed = true;
+        Serial.println("\n[IR2] Vehicle PASSED junction!");
+        Serial.println("[AUTO] Triggering auto reset...");
+
+        // Small delay to let vehicle fully clear
+        delay(1500);
+        autoReset();
+      }
+    }
+  }
+  lastIR2 = ir2Reading;
+}
+
+// ─── RFID CHECK ────────────────────────────────────────────────
+void checkRFID() {
+  if (millis() - lastRfidTime < RFID_COOLDOWN) return;
+  if (!rfid.PICC_IsNewCardPresent()) return;
+  if (!rfid.PICC_ReadCardSerial())   return;
+
+  lastRfidTime = millis();
+  handleRfidTap();
+
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
+}
+
+// ─── WIFI ──────────────────────────────────────────────────────
+void connectWiFi() {
+  Serial.print("[WiFi] Connecting");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  int a = 0;
+  while (WiFi.status() != WL_CONNECTED && a < 30) {
+    delay(500); Serial.print("."); a++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n[WiFi] Connected: " +
+                   WiFi.localIP().toString());
+  } else {
+    Serial.println("\n[WiFi] FAILED — check credentials");
+  }
+}
+
+// ─── MQTT ──────────────────────────────────────────────────────
+void connectMQTT() {
+  while (!mqtt.connected()) {
+    Serial.print("[MQTT] Connecting...");
+    String clientId = "signal-" + String(random(0xffff), HEX);
+    if (mqtt.connect(clientId.c_str())) {
+      Serial.println(" connected");
+      mqtt.subscribe(TOPIC_CMD);
+      Serial.println("[MQTT] Subscribed: " + String(TOPIC_CMD));
+    } else {
+      Serial.println(" failed rc=" + String(mqtt.state()));
+      delay(3000);
+    }
+  }
+}
+
+// ─── SETUP ─────────────────────────────────────────────────────
+void setup() {
+  Serial.begin(115200);
+  Serial.println("\n=== ESP32 #2 Signal Unit Starting ===");
+
+  // LED pins
+  pinMode(LED_RED,    OUTPUT);
+  pinMode(LED_YELLOW, OUTPUT);
+  pinMode(LED_GREEN,  OUTPUT);
+
+  // IR sensor pins
+  pinMode(IR_SENSOR_1, INPUT);
+  pinMode(IR_SENSOR_2, INPUT);
+
+  // Default signal → RED (normal traffic)
+  setSignal("RED");
+
+  // RFID
+  SPI.begin();
+  rfid.PCD_Init();
+  Serial.println("[RFID] RC522 initialized");
+  Serial.println("[RFID] Waiting for cards...");
+
+  // WiFi + MQTT
+  connectWiFi();
+  mqtt.setServer(MQTT_BROKER, MQTT_PORT);
+  mqtt.setCallback(onMqttMessage);
+  connectMQTT();
+
+  Serial.println("\n=== SYSTEM READY ===");
+  Serial.println("Signal: RED (normal)");
+  Serial.println("Waiting for dashboard approval...\n");
+}
+
+// ─── LOOP ──────────────────────────────────────────────────────
+void loop() {
+  if (!mqtt.connected()) connectMQTT();
+  mqtt.loop();
+
+  // Check IR sensors
+  checkIRSensors();
+
+  // Check RFID
+  checkRFID();
+
+  // Safety timeout — auto reset if green too long
+  // (in case IR sensor misses the vehicle)
+  if (signalCleared &&
+      (millis() - signalClearTime > SIGNAL_TIMEOUT)) {
+    Serial.println("[TIMEOUT] 60 sec passed — auto reset");
+    autoReset();
+  }
+}
