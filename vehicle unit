@@ -1,0 +1,251 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
+#include <TinyGPSPlus.h>
+#include <HardwareSerial.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+const char* WIFI_SSID     = "vivo Y400 5G";
+const char* WIFI_PASSWORD = "Arpitha@";
+const char* MQTT_BROKER   = "broker.hivemq.com";
+const int   MQTT_PORT     = 1883;
+const char* TOPIC_PUB     = "emergency/request";
+const char* TOPIC_ACK     = "emergency/ack";
+
+const int BTN_1    = 13;
+const int BTN_2    = 12;
+const int GPS_RX   = 16;
+const int GPS_TX   = 17;
+const int LCD_ADDR = 0x27;
+
+struct Vehicle {
+  const char* id;
+  const char* token;
+  const char* destination;
+  const char* direction;
+  int         signals;
+  const char* priority;
+  const char* label;
+  const char* vehicle_type;
+};
+
+Vehicle VEHICLES[2] = {
+  {
+    "AMB-01", "a3f9x2k7",
+    "Victoria Hospital", "North",
+    2, "high", "Ambulance", "Ambulance"
+  },
+  {
+    "FIRE-01", "f4r3x9z2",
+    "KR Puram Station", "East",
+    3, "high", "Fire Truck", "Fire Truck"
+  }
+};
+
+WiFiClient        wifiClient;
+PubSubClient      mqtt(wifiClient);
+TinyGPSPlus       gps;
+HardwareSerial    gpsSerial(2);
+LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
+
+bool          lastBtn1  = HIGH;
+bool          lastBtn2  = HIGH;
+unsigned long debounce1 = 0;
+unsigned long debounce2 = 0;
+
+float  currentLat  = 12.9252;
+float  currentLon  = 77.5938;
+String currentCity = "Bengaluru";
+bool   gpsFixed    = false;
+
+void lcdShow(String l1, String l2) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(l1.substring(0, 16));
+  lcd.setCursor(0, 1);
+  lcd.print(l2.substring(0, 16));
+}
+
+void connectWiFi() {
+  lcdShow("WiFi Connecting", WIFI_SSID);
+  Serial.print("[WiFi] Connecting");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  int a = 0;
+  while (WiFi.status() != WL_CONNECTED && a < 30) {
+    delay(500); Serial.print("."); a++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n[WiFi] Connected!");
+    lcdShow("WiFi Connected!", WiFi.localIP().toString());
+    delay(1500);
+  } else {
+    Serial.println("\n[WiFi] FAILED");
+    lcdShow("WiFi FAILED!", "Check password");
+    delay(2000);
+  }
+}
+
+void connectMQTT() {
+  while (!mqtt.connected()) {
+    Serial.print("[MQTT] Connecting...");
+    lcdShow("MQTT Connecting", "Please wait...");
+    String clientId = "vehicle-" + String(random(0xffff), HEX);
+    if (mqtt.connect(clientId.c_str())) {
+      Serial.println(" connected");
+      mqtt.subscribe(TOPIC_ACK);
+      lcdShow("MQTT Connected!", "HiveMQ broker");
+      delay(1000);
+    } else {
+      Serial.println(" failed rc=" + String(mqtt.state()));
+      delay(3000);
+    }
+  }
+}
+
+void getIPLocation() {
+  Serial.println("[LOC] Getting IP location...");
+  HTTPClient http;
+  http.begin("http://ip-api.com/json");
+  if (http.GET() == 200) {
+    StaticJsonDocument<512> doc;
+    if (!deserializeJson(doc, http.getString())) {
+      currentLat  = doc["lat"].as<float>();
+      currentLon  = doc["lon"].as<float>();
+      currentCity = doc["city"].as<String>();
+      Serial.printf("[LOC] %.6f, %.6f — %s\n",
+        currentLat, currentLon, currentCity.c_str());
+    }
+  }
+  http.end();
+}
+
+void sendRequest(int idx) {
+  Vehicle v = VEHICLES[idx];
+  Serial.printf("\n[BTN %d] %s request!\n", idx + 1, v.label);
+  lcdShow(String(v.label), "Sending...");
+
+  if (!gpsFixed) getIPLocation();
+
+  if (!mqtt.connected()) connectMQTT();
+  mqtt.loop();
+  delay(100);
+
+  StaticJsonDocument<400> doc;
+  doc["vehicle_id"]        = v.id;
+  doc["auth_token"]        = v.token;
+  doc["lat"]               = currentLat;
+  doc["lon"]               = currentLon;
+  doc["city"]              = currentCity;
+  doc["direction"]         = v.direction;
+  doc["destination"]       = v.destination;
+  doc["signals_requested"] = v.signals;
+  doc["priority"]          = v.priority;
+  doc["gps_fixed"]         = gpsFixed;
+  doc["speed_kmh"]         = 40;
+  doc["vehicle_type"]      = v.vehicle_type;
+
+  String payload;
+  serializeJson(doc, payload);
+  Serial.println("[PAYLOAD] " + payload);
+
+  mqtt.loop();
+  delay(50);
+
+  if (mqtt.publish(TOPIC_PUB, payload.c_str())) {
+    Serial.println("[MQTT] Published successfully");
+    lcdShow("Request Sent!", gpsFixed ? "GPS: Real" : "GPS: IP");
+  } else {
+    Serial.println("[MQTT] Publish FAILED");
+    lcdShow("Send FAILED!", "Check WiFi/MQTT");
+  }
+}
+
+void checkButton(int pin, bool &last,
+                 unsigned long &deb, int idx) {
+  bool reading = digitalRead(pin);
+  if (reading == LOW && last == HIGH) {
+    if (millis() - deb > 50) {
+      deb = millis();
+      sendRequest(idx);
+    }
+  }
+  last = reading;
+}
+
+void onMqttMessage(char* topic, byte* message,
+                   unsigned int length) {
+  String msg = "";
+  for (unsigned int i = 0; i < length; i++)
+    msg += (char)message[i];
+
+  Serial.println("\n[ACK] Received: " + msg);
+
+  if (msg == "approved") {
+    lcdShow("** APPROVED! **", "Signal: GREEN");
+    Serial.println("[ACK] Request APPROVED!");
+  } else if (msg == "rejected") {
+    lcdShow("** REJECTED **", "Access Denied");
+    Serial.println("[ACK] Request REJECTED");
+  } else if (msg == "reroute") {
+    lcdShow("** REROUTE **", "Road Blocked!");
+    Serial.println("[ACK] REROUTE issued");
+  }
+
+  delay(4000);
+  lcdShow("SYSTEM READY", "Press Button");
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("\n=== ESP32 #1 Vehicle Unit ===");
+
+  pinMode(BTN_1, INPUT_PULLUP);
+  pinMode(BTN_2, INPUT_PULLUP);
+
+  Wire.begin(21, 22);
+  lcd.init();
+  lcd.backlight();
+  lcdShow("EMERGENCY SYS", "Initializing");
+  delay(1200);
+
+  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
+
+  connectWiFi();
+
+  mqtt.setBufferSize(512);
+  mqtt.setServer(MQTT_BROKER, MQTT_PORT);
+  mqtt.setCallback(onMqttMessage);
+  connectMQTT();
+
+  getIPLocation();
+
+  lcdShow("SYSTEM READY", "Press Button");
+  Serial.println("[READY] Waiting for button press...");
+}
+
+void loop() {
+  if (!mqtt.connected()) connectMQTT();
+  mqtt.loop();
+  delay(10);
+
+  while (gpsSerial.available()) {
+    gps.encode(gpsSerial.read());
+  }
+
+  if (gps.location.isValid()) {
+    if (!gpsFixed) {
+      Serial.println("[GPS] Fix obtained!");
+      lcdShow("GPS: Fixed!", "Real location OK");
+      delay(1500);
+      lcdShow("SYSTEM READY", "Press Button");
+    }
+    gpsFixed   = true;
+    currentLat = gps.location.lat();
+    currentLon = gps.location.lng();
+  }
+
+  checkButton(BTN_1, lastBtn1, debounce1, 0);
+  checkButton(BTN_2, lastBtn2, debounce2, 1);
+}
