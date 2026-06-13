@@ -1,0 +1,1282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Control Room — Emergency Signal System</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mqtt@5.3.4/dist/mqtt.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg:        #0d0f14;
+      --surface:   #141720;
+      --surface2:  #1c2030;
+      --border:    #252a38;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --accent:    #3b82f6;
+      --red:       #ef4444;
+      --green:     #22c55e;
+      --amber:     #f59e0b;
+      --font-sans: 'IBM Plex Sans', sans-serif;
+      --font-mono: 'IBM Plex Mono', monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      font-size: 14px;
+    }
+
+    /* NAV */
+    .nav {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .nav-brand {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .brand-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--red);
+      animation: blink 1.4s ease-in-out infinite;
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.2; }
+    }
+    .nav-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .nav-user {
+      font-size: 12px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+    }
+    .nav-link {
+      font-size: 12px;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 5px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      transition: color .15s, border-color .15s;
+    }
+    .nav-link:hover { color: var(--text); border-color: #3a4158; }
+
+    /* LAYOUT */
+    .page { max-width: 1280px; margin: 0 auto; padding: 24px; }
+    .page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 24px;
+    }
+    .page-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .page-sub {
+      font-size: 12px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+    }
+
+    /* CONNECTION STATUS */
+    .conn-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+    }
+    .conn-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: background .3s;
+    }
+    .conn-dot.online { background: var(--green); }
+    .conn-dot.error  { background: var(--red); }
+
+    /* STATS */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .stat {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px 18px;
+    }
+    .stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      letter-spacing: .05em;
+      margin-bottom: 8px;
+    }
+    .stat-value {
+      font-size: 26px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      color: var(--text);
+    }
+    .stat-value.red    { color: var(--red); }
+    .stat-value.green  { color: var(--green); }
+    .stat-value.amber  { color: var(--amber); }
+    .stat-value.accent { color: var(--accent); }
+
+    /* GRID */
+    .grid-main {
+      display: grid;
+      grid-template-columns: 400px 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .grid-bottom {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    /* CARD */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .card-head {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .card-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .card-body { padding: 18px; }
+
+    /* JUNCTION STATUS */
+    .junction-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      margin-bottom: 16px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .junction-status.normal       { border-color: #166534; background: #052e16; color: #4ade80; }
+    .junction-status.cleared      { border-color: #7f1d1d; background: #2d0a0a; color: #f87171; }
+    .junction-status.unauthorized { border-color: #78350f; background: #1c1003; color: #fbbf24; }
+    .junction-status.cleared-done { border-color: #1d4ed8; background: #0a1628; color: #93c5fd; }
+    .junc-indicator {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .junction-status.normal .junc-indicator       { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .junction-status.cleared .junc-indicator      { background: var(--red);   box-shadow: 0 0 8px var(--red); animation: blink .8s ease-in-out infinite; }
+    .junction-status.unauthorized .junc-indicator { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+    .junction-status.cleared-done .junc-indicator { background: var(--accent);box-shadow: 0 0 8px var(--accent); }
+
+    /* ALERT CARD */
+    .alert-request-card {
+      background: #1a0b0b;
+      border: 1px solid #7f1d1d;
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 16px;
+      display: none;
+    }
+    .alert-request-card.visible  { display: block; }
+    .alert-request-card.pending  { border-color: #f59e0b; background: #1a1000; }
+    .alert-request-card.approved { border-color: #22c55e; background: #052e16; }
+    .alert-request-card.rejected { border-color: #64748b; background: #0d0f14; }
+
+    .alert-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .alert-card-title {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--red);
+    }
+    .alert-card-title.pending  { color: var(--amber); }
+    .alert-card-title.approved { color: var(--green); }
+    .alert-card-title.rejected { color: var(--muted); }
+
+    .alert-field {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+    }
+    .alert-key { color: var(--muted); min-width: 100px; }
+    .alert-val { color: var(--text);  font-weight: 500; }
+    .priority-high   { color: var(--red);   }
+    .priority-medium { color: var(--amber); }
+    .priority-low    { color: var(--green); }
+
+    /* APPROVE / REJECT */
+    .ack-btns {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .btn-approve {
+      padding: 10px;
+      background: #052e16;
+      color: #86efac;
+      border: 1px solid #166534;
+      border-radius: 5px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-approve:hover { background: #14532d; }
+    .btn-reject {
+      padding: 10px;
+      background: #1c0606;
+      color: #fca5a5;
+      border: 1px solid #7f1d1d;
+      border-radius: 5px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-reject:hover { background: #2d0a0a; }
+    .btn-reroute {
+      padding: 10px;
+      background: #1c1003;
+      color: #fbbf24;
+      border: 1px solid #78350f;
+      border-radius: 5px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-reroute:hover { background: #292101; }
+
+    /* DIRECTION SELECT */
+    .dir-select-label {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      margin-bottom: 6px;
+    }
+    select {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 8px 10px;
+      font-size: 13px;
+      font-family: var(--font-sans);
+      outline: none;
+      margin-bottom: 14px;
+    }
+    select:focus { border-color: var(--accent); }
+
+    /* JUNCTION BUTTONS */
+    .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .btn-action {
+      padding: 12px 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      transition: opacity .15s, transform .1s;
+    }
+    .btn-action:hover  { opacity: .88; }
+    .btn-action:active { transform: scale(.97); }
+    .btn-action .btn-icon { font-size: 18px; }
+    .btn-clear  { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b; }
+    .btn-clear:hover  { background: #991b1b; }
+    .btn-normal { background: #052e16; color: #86efac; border: 1px solid #166534; }
+    .btn-normal:hover { background: #14532d; }
+
+    .btn-row3 { margin-top: 10px; }
+    .btn-unauthorized {
+      width: 100%;
+      padding: 10px;
+      background: #1c1003;
+      color: #fbbf24;
+      border: 1px solid #78350f;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-unauthorized:hover { background: #292101; }
+
+    /* VEHICLE CLEARED BANNER */
+    #cleared-banner {
+      display: none;
+      background: #0a1628;
+      border: 1px solid #1d4ed8;
+      border-radius: 6px;
+      padding: 14px 18px;
+      margin-bottom: 16px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: #93c5fd;
+      align-items: center;
+      gap: 12px;
+    }
+    #cleared-banner.visible { display: flex; }
+    .cleared-icon { font-size: 20px; }
+
+    /* CMD LOG */
+    .cmd-log-item {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+      padding: 4px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .cmd-log-item:last-child { border-bottom: none; }
+
+    /* MAP */
+    #live-map { height: 360px; border-radius: 4px; overflow: hidden; }
+
+    /* CHART */
+    .chart-wrap { position: relative; height: 260px; }
+
+    /* TABLE */
+    .log-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    thead th {
+      padding: 9px 12px;
+      text-align: left;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: .05em;
+      border-bottom: 1px solid var(--border);
+      font-weight: 400;
+    }
+    tbody td {
+      padding: 9px 12px;
+      border-bottom: 1px solid #1a1f2e;
+      color: var(--text);
+      font-family: var(--font-mono);
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: var(--surface2); }
+    .empty-cell { text-align: center; color: var(--muted); padding: 24px; }
+
+    /* BADGE */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .08em;
+      font-family: var(--font-mono);
+    }
+    .badge-high     { background: #7f1d1d; color: #fca5a5; }
+    .badge-med      { background: #78350f; color: #fcd34d; }
+    .badge-low      { background: #052e16; color: #86efac; }
+    .badge-ok       { background: #052e16; color: #86efac; }
+    .badge-cmd      { background: #0f172a; color: #93c5fd; border: 1px solid #1e3a5f; }
+    .badge-unauth   { background: #44250e; color: #fbbf24; }
+    .badge-verified { background: #0f2a1a; color: #4ade80; border: 1px solid #166534; }
+    .badge-amb      { background: #0f172a; color: #93c5fd; border: 1px solid #1e3a5f; }
+    .badge-fire     { background: #3d1a00; color: #fb923c; border: 1px solid #7c2d12; }
+
+    /* TOAST */
+    #toast {
+      position: fixed;
+      bottom: 24px; right: 24px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 18px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text);
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all .25s;
+      z-index: 999;
+      max-width: 320px;
+    }
+    #toast.show    { opacity: 1; transform: translateY(0); }
+    #toast.success { border-color: var(--green); }
+    #toast.error   { border-color: var(--red);   }
+    #toast.warn    { border-color: var(--amber);  }
+
+    /* FILTER */
+    .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
+    .filter-btn {
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--font-mono);
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .filter-btn:hover  { color: var(--text); border-color: #3a4158; }
+    .filter-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+    /* Leaflet dark popup */
+    .leaflet-popup-content-wrapper {
+      background: var(--surface2) !important;
+      border: 1px solid var(--border) !important;
+      color: var(--text) !important;
+      font-family: var(--font-mono) !important;
+      font-size: 12px !important;
+      box-shadow: none !important;
+      border-radius: 4px !important;
+    }
+    .leaflet-popup-tip          { background: var(--surface2) !important; }
+    .leaflet-popup-close-button { color: var(--muted) !important; }
+
+    @media (max-width: 900px) {
+      .grid-main   { grid-template-columns: 1fr; }
+      .grid-bottom { grid-template-columns: 1fr; }
+      .stats       { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="nav">
+  <div class="nav-brand">
+    <div class="brand-dot"></div>
+    EMERGENCY SIGNAL SYSTEM / CONTROL ROOM
+  </div>
+  <div class="nav-right">
+    <div class="conn-status">
+      <div class="conn-dot" id="mqtt-dot"></div>
+      <span id="mqtt-label">MQTT: connecting…</span>
+    </div>
+    <span class="nav-user">{{ user }}</span>
+    {% if session.role == 'admin' %}
+    <a href="/admin" class="nav-link">Admin</a>
+    {% endif %}
+    <a href="/logout" class="nav-link">Logout</a>
+  </div>
+</nav>
+
+<div class="page">
+
+  <!-- HEADER -->
+  <div class="page-header">
+    <div>
+      <div class="page-title">Control Room Dashboard</div>
+      <div class="page-sub" id="last-refresh">—</div>
+    </div>
+  </div>
+
+  <!-- VEHICLE CLEARED BANNER -->
+  <div id="cleared-banner">
+    <span class="cleared-icon">✅</span>
+    <div>
+      <b id="cleared-vehicle">Vehicle</b> has cleared the junction.
+      Normal traffic cycle resuming.
+    </div>
+  </div>
+
+  <!-- STATS -->
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-label">TOTAL ALERTS</div>
+      <div class="stat-value accent" id="s-total">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">HIGH PRIORITY</div>
+      <div class="stat-value red" id="s-high">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">COMMANDS SENT</div>
+      <div class="stat-value" id="s-cmds">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">JUNCTION STATUS</div>
+      <div class="stat-value green" id="s-junction">NORMAL</div>
+    </div>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="grid-main">
+
+    <!-- LEFT: CONTROL PANEL -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">JUNCTION CONTROL</span>
+        <span class="badge badge-ok" id="junc-badge">NORMAL</span>
+      </div>
+      <div class="card-body">
+
+        <!-- Junction status bar -->
+        <div class="junction-status normal" id="junction-status-bar">
+          <div class="junc-indicator"></div>
+          <span id="junction-status-text">Normal traffic cycle active</span>
+        </div>
+
+        <!-- Incoming alert card -->
+        <div class="alert-request-card" id="alert-request-card">
+          <div class="alert-card-header">
+            <span class="alert-card-title" id="alert-card-title">
+              🚨 INCOMING ALERT
+            </span>
+            <span class="badge badge-high" id="alert-priority-badge">HIGH</span>
+          </div>
+
+          <div class="alert-field">
+            <span class="alert-key">vehicle</span>
+            <span class="alert-val" id="a-vehicle">—</span>
+          </div>
+          <div class="alert-field">
+            <span class="alert-key">type</span>
+            <span class="alert-val" id="a-label">—</span>
+          </div>
+          <div class="alert-field">
+            <span class="alert-key">direction</span>
+            <span class="alert-val" id="a-direction">—</span>
+          </div>
+          <div class="alert-field">
+            <span class="alert-key">destination</span>
+            <span class="alert-val" id="a-destination">—</span>
+          </div>
+          <div class="alert-field">
+            <span class="alert-key">signals req.</span>
+            <span class="alert-val" id="a-signals">—</span>
+          </div>
+          <div class="alert-field">
+            <span class="alert-key">location</span>
+            <span class="alert-val" id="a-location">—</span>
+          </div>
+          <div class="alert-field">
+            <span class="alert-key">city</span>
+            <span class="alert-val" id="a-city">—</span>
+          </div>
+          <div class="alert-field">
+            <span class="alert-key">gps</span>
+            <span class="alert-val" id="a-gps">—</span>
+          </div>
+          <div class="alert-field">
+            <span class="alert-key">priority</span>
+            <span class="alert-val" id="a-priority">—</span>
+          </div>
+          <div class="alert-field">
+            <span class="alert-key">time</span>
+            <span class="alert-val" id="a-time">—</span>
+          </div>
+<div class="alert-field">
+            <span class="alert-key">junction</span>
+            <span class="alert-val" id="a-junction">—</span>
+          </div>
+          <div class="alert-field">
+            <span class="alert-key">distance</span>
+            <span class="alert-val" id="a-distance">—</span>
+          </div>
+          <div class="alert-field">
+            <span class="alert-key">ETA</span>
+            <span class="alert-val" id="a-eta" style="font-weight:700;font-size:1.1em;">—</span>
+          </div>
+          <!-- 3 ACK buttons -->
+          <div class="ack-btns" id="ack-btns">
+            <button class="btn-approve"  onclick="sendAck('approved')">✅ APPROVE</button>
+            <button class="btn-reroute"  onclick="sendAck('reroute')">↩ REROUTE</button>
+            <button class="btn-reject"   onclick="sendAck('rejected')">❌ REJECT</button>
+          </div>
+        </div>
+
+        <!-- Direction select -->
+        <div class="dir-select-label">AMBULANCE DIRECTION</div>
+        <select id="direction-select">
+          <option value="North">North</option>
+          <option value="South">South</option>
+          <option value="East">East</option>
+          <option value="West">West</option>
+        </select>
+
+        <!-- CLEAR / NORMAL buttons -->
+        <div class="btn-row">
+          <button class="btn-action btn-clear" onclick="sendCommand('CLEAR')">
+            <span class="btn-icon">🔴</span>CLEAR
+          </button>
+          <button class="btn-action btn-normal" onclick="sendCommand('NORMAL')">
+            <span class="btn-icon">🟢</span>NORMAL
+          </button>
+        </div>
+
+        <!-- Mark unauthorised -->
+        <div class="btn-row3">
+          <button class="btn-unauthorized" onclick="markUnauthorized()">
+            ⚠ Mark Alert as Unauthorised &amp; Drop
+          </button>
+        </div>
+
+        <!-- Recent commands -->
+        <div style="margin-top:18px;">
+          <div class="dir-select-label" style="margin-bottom:8px;">RECENT COMMANDS</div>
+          <div id="cmd-mini-log">
+            <div class="cmd-log-item" style="color:var(--muted);">No commands yet</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- RIGHT: MAP -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">LIVE ALERT MAP</span>
+        <div class="filter-row">
+          <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
+          <button class="filter-btn" onclick="setFilter('today',this)">Today</button>
+          <button class="filter-btn" onclick="setFilter('week',this)">Week</button>
+          <button class="filter-btn" onclick="setFilter('month',this)">Month</button>
+        </div>
+      </div>
+      <div class="card-body" style="padding:0;">
+        <div id="live-map"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- BOTTOM GRID -->
+  <div class="grid-bottom">
+
+    <!-- CHART -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">ALERTS PER DAY</span>
+        <span style="font-size:11px;color:var(--muted);font-family:var(--font-mono);">last 14 days</span>
+      </div>
+      <div class="card-body">
+        <div class="chart-wrap">
+          <canvas id="alert-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- LOG TABLE -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">RECENT ALERTS</span>
+        <span style="font-size:11px;color:var(--muted);font-family:var(--font-mono);" id="log-count">—</span>
+      </div>
+      <div class="card-body" style="padding:0;">
+        <div class="log-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>TIME</th>
+                <th>VEHICLE</th>
+                <th>TYPE</th>
+                <th>DIR</th>
+                <th>DEST</th>
+                <th>PRI</th>
+                <th>STATUS</th>
+              </tr>
+            </thead>
+            <tbody id="log-tbody">
+              <tr><td class="empty-cell" colspan="7">No alerts yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<script>
+// ─────────────────────────────────────────────
+// CONFIG — matches her ESP32 #1 topics exactly
+// ─────────────────────────────────────────────
+var BROKER_WS      = "wss://broker.hivemq.com:8884/mqtt";
+var TOPIC_VERIFIED = "emergency/verified";
+var TOPIC_ACK      = "emergency/ack";        // her TOPIC_ACK
+var TOPIC_JUNC_CMD = "ambulance/junction/command";
+var TOPIC_STATUS   = "ambulance/junction/status";
+var TOPIC_RESET    = "emergency/reset";
+
+// ─────────────────────────────────────────────
+// STATE
+// ─────────────────────────────────────────────
+var allAlerts     = [];
+var cmdLog        = [];
+var currentAlert  = null;
+var alertStatus   = "idle";
+var junctionState = "normal";
+var activeFilter  = "all";
+var leafletMarkers = [];
+var chartInst     = null;
+
+// ─────────────────────────────────────────────
+// MAP
+// ─────────────────────────────────────────────
+var map = L.map('live-map').setView([12.9716, 77.5946], 11);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap'
+}).addTo(map);
+
+// ─────────────────────────────────────────────
+// MQTT
+// ─────────────────────────────────────────────
+var mqttClient = mqtt.connect(BROKER_WS, {
+  clientId: "ctrl_" + Math.random().toString(16).slice(2, 8),
+  clean: true,
+  reconnectPeriod: 3000
+});
+
+mqttClient.on("connect", function() {
+  setConn(true);
+  mqttClient.subscribe([TOPIC_VERIFIED, TOPIC_STATUS, TOPIC_RESET]);
+  toast("Connected to MQTT broker", "success");
+});
+mqttClient.on("error",     function(e) { setConn(false); console.warn(e); });
+mqttClient.on("close",     function()  { setConn(false); });
+mqttClient.on("reconnect", function()  {
+  document.getElementById("mqtt-label").innerText = "MQTT: reconnecting…";
+});
+
+mqttClient.on("message", function(topic, payload) {
+  var raw = payload.toString();
+  console.log("[MQTT] " + topic + " → " + raw);
+
+  if (topic === TOPIC_VERIFIED) {
+    try {
+      var data = JSON.parse(raw);
+      data.timestamp = data.timestamp ||
+        new Date().toISOString().replace("T"," ").slice(0,19);
+      onVerifiedAlert(data);
+    } catch(e) { console.warn("Bad payload:", raw); }
+  }
+  else if (topic === TOPIC_STATUS) {
+    updateJunctionStatus(raw.trim());
+  }
+  else if (topic === TOPIC_RESET) {
+    onVehicleCleared(raw);
+  }
+});
+
+function setConn(ok) {
+  document.getElementById("mqtt-dot").className   = "conn-dot " + (ok ? "online" : "error");
+  document.getElementById("mqtt-label").innerText = ok ? "MQTT: live" : "MQTT: offline";
+}
+
+// ─────────────────────────────────────────────
+// INCOMING VERIFIED ALERT
+// ─────────────────────────────────────────────
+function onVerifiedAlert(data) {
+  currentAlert = data;
+  alertStatus  = "pending";
+  allAlerts.unshift(data);
+
+  var p    = data.priority || "low";
+  var card = document.getElementById("alert-request-card");
+  card.className = "alert-request-card visible pending";
+
+  document.getElementById("alert-card-title").className = "alert-card-title pending";
+  document.getElementById("alert-card-title").innerText = "🚨 INCOMING VERIFIED ALERT";
+
+  var pb = document.getElementById("alert-priority-badge");
+  pb.className = "badge badge-" + (p==="high"?"high":p==="medium"?"med":"low");
+  pb.innerText = p.toUpperCase();
+
+  // Populate all fields from her payload fields
+  document.getElementById("a-vehicle").innerText     = data.vehicle_id            || "—";
+  document.getElementById("a-label").innerText       = data.label                 || getLabel(data.vehicle_id);
+  document.getElementById("a-direction").innerText   = data.direction              || "—";
+  document.getElementById("a-destination").innerText = data.destination            || "—";
+  document.getElementById("a-signals").innerText     = data.signals_requested + " signals" || "—";
+  document.getElementById("a-location").innerText    = (data.lat||"?") + ", " + (data.lon||"?");
+  document.getElementById("a-city").innerText        = data.city                   || "—";
+  document.getElementById("a-gps").innerText         = data.gps_fixed ? "GPS Locked ✓" : "IP Location";
+  document.getElementById("a-priority").innerText    = p.toUpperCase();
+  document.getElementById("a-time").innerText        = data.timestamp              || "—";
+document.getElementById("a-junction").innerText = data.nearest_junction || "—";
+  document.getElementById("a-distance").innerText = data.distance_meters ? data.distance_meters + " meters" : "—";
+  document.getElementById("a-eta").innerText      = data.eta_display || "—";
+  var etaEl = document.getElementById("a-eta");
+  if      (data.recommendation === "NOW")  { etaEl.style.color = "#ef4444"; }
+  else if (data.recommendation === "SOON") { etaEl.style.color = "#f59e0b"; }
+  else                                     { etaEl.style.color = "#22c55e"; }
+  document.getElementById("ack-btns").style.display = "grid";
+
+  // Auto set direction
+  if (data.direction) {
+    var sel = document.getElementById("direction-select");
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === data.direction) {
+        sel.selectedIndex = i; break;
+      }
+    }
+  }
+
+  toast("🚨 ALERT: " + (data.vehicle_id||"?") +
+        " | " + getLabel(data.vehicle_id) +
+        " | " + p.toUpperCase(), "error");
+  refreshAll();
+}
+
+// Helper — get vehicle label from ID
+function getLabel(id) {
+  if (!id) return "Unknown";
+  if (id === "AMB-01")  return "Ambulance";
+  if (id === "FIRE-01") return "Fire Truck";
+  return id;
+}
+
+// ─────────────────────────────────────────────
+// SEND ACK — publishes to "emergency/ack"
+// her ESP32 subscribes to this exact topic
+// ─────────────────────────────────────────────
+function sendAck(decision) {
+  if (!currentAlert) return;
+
+  // Publish to emergency/ack — her ESP32 listens here
+  mqttClient.publish(TOPIC_ACK, decision, { qos: 1 });
+  console.log("[ACK] Published: " + decision + " → " + TOPIC_ACK);
+
+  var card = document.getElementById("alert-request-card");
+
+  if (decision === "approved") {
+    alertStatus = "approved";
+    card.className = "alert-request-card visible approved";
+    document.getElementById("alert-card-title").className = "alert-card-title approved";
+    document.getElementById("alert-card-title").innerText = "✅ ALERT APPROVED";
+    document.getElementById("ack-btns").style.display = "none";
+
+    // Auto clear junction
+    var direction = currentAlert.direction ||
+      document.getElementById("direction-select").value;
+    var cmdPayload = JSON.stringify({
+      command:    "CLEAR",
+      direction:  direction,
+      vehicle_id: currentAlert.vehicle_id
+    });
+    mqttClient.publish(TOPIC_JUNC_CMD, cmdPayload, { qos: 1 });
+    logCmd("CLEAR", direction);
+    updateJunctionStatus("cleared");
+    fetch("/command/CLEAR?direction=" + direction).catch(function(){});
+    toast("✅ Approved — Signal GREEN for " + direction, "success");
+
+  } else if (decision === "reroute") {
+    alertStatus = "idle";
+    card.className = "alert-request-card";
+    document.getElementById("ack-btns").style.display = "none";
+    currentAlert = null;
+    toast("↩ Reroute sent to vehicle", "warn");
+    setTimeout(function() { card.className = "alert-request-card"; }, 2000);
+
+  } else {
+    // rejected
+    alertStatus = "rejected";
+    card.className = "alert-request-card visible rejected";
+    document.getElementById("alert-card-title").className = "alert-card-title rejected";
+    document.getElementById("alert-card-title").innerText = "❌ ALERT REJECTED";
+    document.getElementById("ack-btns").style.display = "none";
+    toast("❌ Alert rejected", "warn");
+    setTimeout(function() {
+      card.className = "alert-request-card";
+      currentAlert   = null;
+      alertStatus    = "idle";
+    }, 3000);
+  }
+
+  refreshAll();
+}
+
+// ─────────────────────────────────────────────
+// VEHICLE CLEARED
+// ─────────────────────────────────────────────
+function onVehicleCleared(raw) {
+  var vehicleId = "Vehicle";
+  try {
+    var d = JSON.parse(raw);
+    vehicleId = d.vehicle_id || "Vehicle";
+  } catch(e) { vehicleId = raw || "Vehicle"; }
+
+  document.getElementById("cleared-vehicle").innerText = vehicleId;
+  document.getElementById("cleared-banner").className  = "visible";
+
+  mqttClient.publish(TOPIC_JUNC_CMD,
+    JSON.stringify({ command: "NORMAL" }), { qos: 1 });
+  logCmd("NORMAL", "—");
+  updateJunctionStatus("cleared-done");
+  fetch("/command/NORMAL?direction=All").catch(function(){});
+  toast("✅ " + vehicleId + " cleared — Normal cycle resuming", "success");
+
+  setTimeout(function() {
+    document.getElementById("cleared-banner").className = "";
+    updateJunctionStatus("normal");
+    document.getElementById("alert-request-card").className = "alert-request-card";
+    currentAlert = null;
+    alertStatus  = "idle";
+  }, 8000);
+
+  refreshAll();
+}
+
+// ─────────────────────────────────────────────
+// MANUAL COMMANDS
+// ─────────────────────────────────────────────
+function sendCommand(cmd) {
+  var direction = document.getElementById("direction-select").value;
+  fetch("/command/" + cmd + "?direction=" + direction)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { toast(data.error, "error"); return; }
+      mqttClient.publish(TOPIC_JUNC_CMD,
+        JSON.stringify({ command: cmd, direction: direction }), { qos: 0 });
+      logCmd(cmd, direction);
+      updateJunctionStatus(cmd === "CLEAR" ? "cleared" : "normal");
+      toast("Command sent: " + cmd + " (" + direction + ")", "success");
+    })
+    .catch(function(e) { toast("Failed: " + e.message, "error"); });
+}
+
+function markUnauthorized() {
+  var card = document.getElementById("alert-request-card");
+  card.className = "alert-request-card";
+  currentAlert   = null;
+  alertStatus    = "idle";
+  toast("Alert dropped — unauthorised vehicle", "warn");
+  setTimeout(function() { card.className = "alert-request-card"; }, 2000);
+}
+
+function logCmd(cmd, dir) {
+  var ts = new Date().toLocaleTimeString();
+  cmdLog.unshift({ cmd: cmd, direction: dir, time: ts });
+  if (cmdLog.length > 6) cmdLog.pop();
+  renderCmdLog();
+  var n = parseInt(document.getElementById("s-cmds").innerText || "0");
+  document.getElementById("s-cmds").innerText = n + 1;
+}
+
+function renderCmdLog() {
+  var el = document.getElementById("cmd-mini-log");
+  if (cmdLog.length === 0) {
+    el.innerHTML = '<div class="cmd-log-item" style="color:var(--muted);">No commands yet</div>';
+    return;
+  }
+  el.innerHTML = cmdLog.map(function(c) {
+    var col = c.cmd === "CLEAR" ? "var(--red)" : "var(--green)";
+    return '<div class="cmd-log-item">' +
+      c.time + ' — <span style="color:' + col + ';">' + c.cmd + '</span>' +
+      (c.direction !== "—" ? " (" + c.direction + ")" : "") +
+    '</div>';
+  }).join("");
+}
+
+// ─────────────────────────────────────────────
+// JUNCTION STATUS
+// ─────────────────────────────────────────────
+function updateJunctionStatus(status) {
+  var bar   = document.getElementById("junction-status-bar");
+  var text  = document.getElementById("junction-status-text");
+  var badge = document.getElementById("junc-badge");
+  var sval  = document.getElementById("s-junction");
+  status = (status || "").toLowerCase();
+
+  if (status === "clear" || status === "cleared") {
+    bar.className   = "junction-status cleared";
+    text.innerText  = "Junction CLEARED — vehicle passing";
+    badge.className = "badge badge-high";
+    badge.innerText = "CLEARED";
+    sval.className  = "stat-value red";
+    sval.innerText  = "CLEARED";
+  } else if (status === "cleared-done") {
+    bar.className   = "junction-status cleared-done";
+    text.innerText  = "Vehicle cleared — resuming normal";
+    badge.className = "badge badge-cmd";
+    badge.innerText = "RESUMING";
+    sval.className  = "stat-value accent";
+    sval.innerText  = "RESUMING";
+  } else {
+    bar.className   = "junction-status normal";
+    text.innerText  = "Normal traffic cycle active";
+    badge.className = "badge badge-ok";
+    badge.innerText = "NORMAL";
+    sval.className  = "stat-value green";
+    sval.innerText  = "NORMAL";
+  }
+  junctionState = status;
+}
+
+// ─────────────────────────────────────────────
+// FILTER
+// ─────────────────────────────────────────────
+function setFilter(period, btn) {
+  activeFilter = period;
+  document.querySelectorAll(".filter-btn").forEach(function(b) {
+    b.classList.remove("active");
+  });
+  if (btn) btn.classList.add("active");
+  refreshAll();
+}
+
+function filterAlerts(data) {
+  var now = new Date();
+  return data.filter(function(a) {
+    if (!a.timestamp) return activeFilter === "all";
+    var t = new Date(a.timestamp);
+    if (activeFilter === "all")   return true;
+    if (activeFilter === "today") return t.toDateString() === now.toDateString();
+    if (activeFilter === "week") {
+      var w = new Date(now); w.setDate(now.getDate() - 7);
+      return t >= w;
+    }
+    if (activeFilter === "month") {
+      return t.getMonth()     === now.getMonth() &&
+             t.getFullYear()  === now.getFullYear();
+    }
+    return true;
+  });
+}
+
+// ─────────────────────────────────────────────
+// MAP
+// ─────────────────────────────────────────────
+function renderMap(data) {
+  leafletMarkers.forEach(function(m) { map.removeLayer(m); });
+  leafletMarkers = [];
+  var colors = { high:"#ef4444", medium:"#f59e0b", low:"#22c55e" };
+  data.filter(function(a) { return a.lat && a.lon; }).forEach(function(a) {
+    var lat = parseFloat(a.lat);
+    var lon = parseFloat(a.lon);
+    if (isNaN(lat) || isNaN(lon)) return;
+    var col  = colors[a.priority] || "#3b82f6";
+    var icon = L.divIcon({
+      className: "",
+      html: '<div style="width:14px;height:14px;background:' + col +
+            ';border-radius:50%;border:2px solid rgba(255,255,255,0.5);' +
+            'box-shadow:0 0 6px ' + col + '60;"></div>',
+      iconSize:[14,14], iconAnchor:[7,7]
+    });
+    var m = L.marker([lat,lon],{icon:icon}).addTo(map);
+    m.bindPopup(
+      "<b>" + (a.vehicle_id||"—") + "</b> — " + getLabel(a.vehicle_id) + "<br>" +
+      "Dir: "  + (a.direction||"?") + "<br>" +
+      "Dest: " + (a.destination||"—") + "<br>" +
+      "<b>" + (a.priority||"—").toUpperCase() + "</b><br>" +
+      (a.timestamp||"")
+    );
+    leafletMarkers.push(m);
+  });
+  if (leafletMarkers.length > 0) {
+    map.fitBounds(new L.featureGroup(leafletMarkers).getBounds().pad(.25));
+  }
+}
+
+// ─────────────────────────────────────────────
+// CHART
+// ─────────────────────────────────────────────
+function renderChart(data) {
+  var days = 14;
+  var labels=[],highC=[],medC=[],lowC=[];
+  for (var i = days-1; i >= 0; i--) {
+    var d = new Date(); d.setDate(d.getDate()-i);
+    labels.push(d.toLocaleDateString("en",{month:"short",day:"numeric"}));
+    highC.push(0); medC.push(0); lowC.push(0);
+  }
+  data.forEach(function(a) {
+    if (!a.timestamp) return;
+    var t    = new Date(a.timestamp);
+    var diff = Math.floor((new Date()-t)/86400000);
+    if (diff >= days) return;
+    var idx = days-1-diff;
+    if      (a.priority==="high")   highC[idx]++;
+    else if (a.priority==="medium") medC[idx]++;
+    else                            lowC[idx]++;
+  });
+  var ctx = document.getElementById("alert-chart").getContext("2d");
+  if (chartInst) chartInst.destroy();
+  chartInst = new Chart(ctx,{
+    type:"bar",
+    data:{
+      labels:labels,
+      datasets:[
+        {label:"High",   data:highC, backgroundColor:"#ef4444cc", borderRadius:3, borderSkipped:false},
+        {label:"Medium", data:medC,  backgroundColor:"#f59e0bcc", borderRadius:3, borderSkipped:false},
+        {label:"Low",    data:lowC,  backgroundColor:"#22c55ecc", borderRadius:3, borderSkipped:false}
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:"#64748b",font:{family:"IBM Plex Mono",size:11},boxWidth:12}}},
+      scales:{
+        x:{stacked:true,grid:{color:"#252a38"},ticks:{color:"#64748b",font:{family:"IBM Plex Mono",size:10}}},
+        y:{stacked:true,beginAtZero:true,grid:{color:"#252a38"},
+           ticks:{color:"#64748b",font:{family:"IBM Plex Mono",size:11},stepSize:1,precision:0}}
+      }
+    }
+  });
+}
+
+// ─────────────────────────────────────────────
+// TABLE
+// ─────────────────────────────────────────────
+function renderTable(data) {
+  var tbody = document.getElementById("log-tbody");
+  document.getElementById("log-count").innerText = data.length + " entries";
+  if (data.length === 0) {
+    tbody.innerHTML = '<tr><td class="empty-cell" colspan="7">No alerts</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.slice(0,50).map(function(a) {
+    var p   = a.priority || "low";
+    var bc  = p==="high"?"badge-high":p==="medium"?"badge-med":"badge-low";
+    var lbl = getLabel(a.vehicle_id);
+    var lbc = a.vehicle_id==="AMB-01"?"badge-amb":"badge-fire";
+    var ver = a.verified
+      ? '<span class="badge badge-verified">VERIFIED</span>'
+      : '<span class="badge badge-unauth">UNVERIFIED</span>';
+    return '<tr>' +
+      '<td>' + (a.timestamp||"—") + '</td>' +
+      '<td>' + (a.vehicle_id||"—") + '</td>' +
+      '<td><span class="badge ' + lbc + '">' + lbl + '</span></td>' +
+      '<td>' + (a.direction||"?") + '</td>' +
+      '<td>' + (a.destination||"—") + '</td>' +
+      '<td><span class="badge ' + bc + '">' + p.toUpperCase() + '</span></td>' +
+      '<td>' + ver + '</td>' +
+    '</tr>';
+  }).join("");
+}
+
+// ─────────────────────────────────────────────
+// STATS
+// ─────────────────────────────────────────────
+function updateStats(data) {
+  document.getElementById("s-total").innerText =
+    data.length;
+  document.getElementById("s-high").innerText  =
+    data.filter(function(a){return a.priority==="high";}).length;
+}
+
+// ─────────────────────────────────────────────
+// REFRESH
+// ─────────────────────────────────────────────
+function refreshAll() {
+  fetch("/alerts/all")
+    .then(function(r) { return r.json(); })
+    .then(function(serverAlerts) {
+      var merged = serverAlerts;
+      allAlerts.forEach(function(la) {
+        var dup = merged.find(function(s) {
+          return s.timestamp===la.timestamp && s.vehicle_id===la.vehicle_id;
+        });
+        if (!dup) merged.unshift(la);
+      });
+      merged.sort(function(a,b){
+        return (b.timestamp||"").localeCompare(a.timestamp||"");
+      });
+      var filtered = filterAlerts(merged);
+      renderMap(filtered);
+      renderChart(merged);
+      renderTable(filtered);
+      updateStats(merged);
+      document.getElementById("last-refresh").innerText =
+        "Last updated: " + new Date().toLocaleTimeString();
+    })
+    .catch(function() {
+      var filtered = filterAlerts(allAlerts);
+      renderMap(filtered);
+      renderChart(allAlerts);
+      renderTable(filtered);
+      updateStats(allAlerts);
+    });
+}
+
+// ─────────────────────────────────────────────
+// TOAST
+// ─────────────────────────────────────────────
+var _toastTimer = null;
+function toast(msg, type) {
+  var el = document.getElementById("toast");
+  el.innerText = msg;
+  el.className = "show " + (type||"");
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(function(){ el.className=""; }, 3500);
+}
+
+// ─────────────────────────────────────────────
+// INIT
+// ─────────────────────────────────────────────
+refreshAll();
+setInterval(refreshAll, 5000);
+</script>
+
+</body>
+</html>

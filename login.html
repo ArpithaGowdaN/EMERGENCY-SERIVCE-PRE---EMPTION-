@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Login — Emergency Signal System</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg:      #0d0f14;
+      --surface: #141720;
+      --border:  #252a38;
+      --text:    #e2e8f0;
+      --muted:   #64748b;
+      --accent:  #3b82f6;
+      --red:     #ef4444;
+    }
+
+    body {
+      font-family: 'IBM Plex Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .brand {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 12px;
+      color: var(--muted);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      margin-bottom: 36px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .brand-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--red);
+      animation: blink 1.4s ease-in-out infinite;
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.2; }
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 36px 40px;
+      width: 360px;
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      color: var(--text);
+    }
+    .sub {
+      font-size: 12px;
+      color: var(--muted);
+      font-family: 'IBM Plex Mono', monospace;
+      margin-bottom: 28px;
+    }
+
+    .error {
+      background: #2d0a0a;
+      border: 1px solid #7f1d1d;
+      border-radius: 4px;
+      color: #fca5a5;
+      font-size: 12px;
+      font-family: 'IBM Plex Mono', monospace;
+      padding: 10px 12px;
+      margin-bottom: 20px;
+    }
+
+    .field { margin-bottom: 16px; }
+    label {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      font-family: 'IBM Plex Mono', monospace;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    input {
+      width: 100%;
+      background: #0d0f14;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 14px;
+      font-family: 'IBM Plex Sans', sans-serif;
+      outline: none;
+      transition: border-color .15s;
+    }
+    input:focus { border-color: var(--accent); }
+
+    button {
+      width: 100%;
+      margin-top: 8px;
+      padding: 11px;
+      background: var(--accent);
+      border: none;
+      border-radius: 4px;
+      color: white;
+      font-size: 14px;
+      font-weight: 500;
+      font-family: 'IBM Plex Sans', sans-serif;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    button:hover  { background: #2563eb; }
+    button:active { background: #1d4ed8; }
+
+    .footer {
+      margin-top: 24px;
+      font-size: 11px;
+      color: var(--muted);
+      font-family: 'IBM Plex Mono', monospace;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="brand">
+    <div class="brand-dot"></div>
+    Emergency Signal System
+  </div>
+
+  <div class="card">
+    <h1>Control Room Access</h1>
+    <p class="sub">Authorised personnel only</p>
+
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST">
+      <div class="field">
+        <label>Username</label>
+        <input type="text" name="username" autofocus autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" name="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit">Login →</button>
+    </form>
+  </div>
+
+  <div class="footer">ambulance signal preemption system / v2</div>
+
+</body>
+</html>
